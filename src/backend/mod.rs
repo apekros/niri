@@ -105,7 +105,7 @@ impl Backend {
         match self {
             Backend::Tty(tty) => tty.render(niri, output, target_presentation_time),
             Backend::Winit(winit) => winit.render(niri, output),
-            Backend::Headless(headless) => headless.render(niri, output),
+            Backend::Headless(headless) => headless.render(niri, output, target_presentation_time),
         }
     }
 

@@ -26,6 +26,19 @@ pub struct Cli {
     /// on a TTY as your non-main compositor instance, to avoid messing up the global environment.
     #[arg(long)]
     pub session: bool,
+    /// Run the headless backend with a virtual output of the given size and refresh rate.
+    ///
+    /// No monitor, TTY, or parent compositor is required. Clients can connect to the Wayland
+    /// socket as usual, and the output can be captured with screencopy tools (e.g. grim).
+    ///
+    /// The refresh rate is optional and defaults to 60 Hz, e.g. `1920x1080@120`.
+    #[arg(
+        long,
+        value_name = "WIDTHxHEIGHT[@HZ]",
+        num_args = 0..=1,
+        default_missing_value = "1920x1080"
+    )]
+    pub headless: Option<String>,
     /// Command to run upon compositor startup.
     #[arg(last = true)]
     pub command: Vec<OsString>,

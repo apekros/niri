@@ -92,7 +92,12 @@ impl Fixture {
     pub fn add_output(&mut self, n: u8, size: (u16, u16)) {
         let state = self.niri_state();
         let niri = &mut state.niri;
-        state.backend.headless().add_output(niri, n, size);
+        state.backend.headless().add_output(
+            niri,
+            n,
+            size,
+            crate::backend::headless::DEFAULT_REFRESH_MHZ,
+        );
     }
 
     pub fn add_client(&mut self) -> ClientId {
