@@ -4,6 +4,8 @@
 //! With a renderer, it also provides dmabuf imports for clients and a timer-driven frame cadence,
 //! which is enough to run real clients and capture them through screencopy.
 
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::mem;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -12,12 +14,14 @@ use anyhow::Context as _;
 use calloop::timer::{TimeoutAction, Timer};
 use niri_config::OutputName;
 use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::backend::allocator::Fourcc;
 use smithay::backend::drm::DrmNode;
 use smithay::backend::egl::native::EGLSurfacelessDisplay;
 use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
+use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::RenderElementStates;
-use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::ImportDma;
+use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
+use smithay::backend::renderer::{Bind as _, ImportDma};
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use smithay::utils::Size;
@@ -26,7 +30,7 @@ use smithay::wayland::presentation::Refresh;
 
 use super::{IpcOutputMap, OutputId, RenderResult};
 use crate::niri::{Niri, RedrawState, State};
-use crate::render_helpers::{resources, shaders};
+use crate::render_helpers::{create_texture, resources, shaders, RenderCtx, RenderTarget};
 use crate::utils::{get_monotonic_time, logical_output};
 
 /// Default refresh rate of headless outputs, in millihertz.
@@ -37,7 +41,20 @@ pub struct Headless {
     /// DRM render node of the renderer's EGL device, if it has one (llvmpipe does not).
     render_node: Option<DrmNode>,
     dmabuf_global: Option<DmabufGlobal>,
+    /// Offscreen render target and damage tracker per output.
+    ///
+    /// Rendering for real (rather than skipping it) is what marks surfaces as scanned out on the
+    /// output, which in turn is what lets [`Niri::send_frame_callbacks`] send per-redraw frame
+    /// callbacks. Without it, every surface looks invisible and clients only receive the ~1 Hz
+    /// throttled fallback callbacks, stalling vsynced clients at ~1 fps.
+    render_targets: HashMap<Output, RenderTargetState>,
     ipc_outputs: Arc<Mutex<IpcOutputMap>>,
+}
+
+/// Offscreen rendering state for one output.
+struct RenderTargetState {
+    texture: GlesTexture,
+    damage_tracker: OutputDamageTracker,
 }
 
 impl Headless {
@@ -46,6 +63,7 @@ impl Headless {
             renderer: None,
             render_node: None,
             dmabuf_global: None,
+            render_targets: HashMap::new(),
             ipc_outputs: Default::default(),
         }
     }
@@ -225,7 +243,24 @@ impl Headless {
             .and_then(|state| state.frame_clock.refresh_interval())
             .map_or(Refresh::Unknown, Refresh::Fixed);
 
-        let states = RenderElementStates::default();
+        // Render for real when we have a renderer: the resulting element states mark
+        // surfaces as scanned out, which drives per-redraw frame callbacks and correct
+        // presentation feedback. See the `render_targets` field comment.
+        let states = if self.renderer.is_some() {
+            match self.render_offscreen(niri, output) {
+                Ok(states) => {
+                    niri.update_primary_scanout_output(output, &states);
+                    states
+                }
+                Err(err) => {
+                    warn!("error rendering headless output: {err:?}");
+                    RenderElementStates::default()
+                }
+            }
+        } else {
+            RenderElementStates::default()
+        };
+
         let mut presentation_feedbacks = niri.take_presentation_feedbacks(output, &states);
         presentation_feedbacks.presented::<_, smithay::utils::Monotonic>(
             target_presentation_time,
@@ -282,6 +317,51 @@ impl Headless {
         }
 
         RenderResult::Submitted
+    }
+
+    /// Renders the output to its offscreen target, returning the element states.
+    ///
+    /// Errors when there is no renderer (test mode).
+    fn render_offscreen(
+        &mut self,
+        niri: &mut Niri,
+        output: &Output,
+    ) -> anyhow::Result<RenderElementStates> {
+        let Self {
+            renderer,
+            render_targets,
+            ..
+        } = self;
+        let renderer = renderer.as_mut().context("no renderer")?;
+
+        let ctx = RenderCtx {
+            renderer,
+            target: RenderTarget::Output,
+            xray: None,
+        };
+        let elements = niri.render_to_vec(ctx, output, true);
+
+        let target = match render_targets.entry(output.clone()) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let mode = output.current_mode().context("output has no mode")?;
+                let texture = create_texture(renderer, mode.size, Fourcc::Abgr8888)
+                    .context("error creating the offscreen texture")?;
+                entry.insert(RenderTargetState {
+                    texture,
+                    damage_tracker: OutputDamageTracker::from_output(output),
+                })
+            }
+        };
+
+        let mut framebuffer = renderer
+            .bind(&mut target.texture)
+            .context("error binding the offscreen texture")?;
+        let res = target
+            .damage_tracker
+            .render_output(renderer, &mut framebuffer, 0, &elements, [0.; 4])
+            .context("error rendering the output")?;
+        Ok(res.states)
     }
 
     /// Simulated vblank: the frame we "submitted" in `render()` has now been "presented".
