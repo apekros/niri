@@ -7,6 +7,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::mem;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -33,8 +34,88 @@ use crate::niri::{Niri, RedrawState, State};
 use crate::render_helpers::{create_texture, resources, shaders, RenderCtx, RenderTarget};
 use crate::utils::{get_monotonic_time, logical_output};
 
-/// Default refresh rate of headless outputs, in millihertz.
-pub const DEFAULT_REFRESH_MHZ: u32 = 60_000;
+/// Size and refresh rate of a headless output.
+///
+/// The refresh rate is always above 1 Hz, since the frame clock needs a refresh interval strictly
+/// below one second, and at most 1000 Hz, since anything faster is a typo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeadlessMode {
+    size: (u16, u16),
+    refresh_mhz: u32,
+}
+
+impl HeadlessMode {
+    /// Refresh rate used when none is given, in millihertz.
+    const DEFAULT_REFRESH_MHZ: u32 = 60_000;
+    /// Exclusive lower bound on the refresh rate, in millihertz.
+    const MIN_REFRESH_MHZ: u32 = 1_000;
+    /// Inclusive upper bound on the refresh rate, in millihertz.
+    const MAX_REFRESH_MHZ: u32 = 1_000_000;
+
+    /// Mode of the given size at the default refresh rate of 60 Hz.
+    pub fn new(size: (u16, u16)) -> Self {
+        Self {
+            size,
+            refresh_mhz: Self::DEFAULT_REFRESH_MHZ,
+        }
+    }
+
+    pub fn size(self) -> (u16, u16) {
+        self.size
+    }
+
+    pub fn refresh_mhz(self) -> u32 {
+        self.refresh_mhz
+    }
+
+    pub fn refresh_interval(self) -> Duration {
+        Duration::from_nanos(1_000_000_000_000 / u64::from(self.refresh_mhz))
+    }
+}
+
+impl FromStr for HeadlessMode {
+    type Err = String;
+
+    /// Parses `WIDTHxHEIGHT` with an optional `@HZ`, e.g. `1920x1080` or `1920x1080@119.88`.
+    fn from_str(mode: &str) -> Result<Self, Self::Err> {
+        let err = || {
+            format!(
+                "invalid headless mode {mode:?}, expected WIDTHxHEIGHT with an optional refresh \
+                 rate, e.g. 1920x1080 or 1920x1080@120"
+            )
+        };
+
+        let (size, refresh) = match mode.split_once('@') {
+            Some((size, refresh)) => (size, Some(refresh)),
+            None => (mode, None),
+        };
+
+        let (width, height) = size.split_once('x').ok_or_else(err)?;
+        let width: u16 = width.parse().map_err(|_| err())?;
+        let height: u16 = height.parse().map_err(|_| err())?;
+        if width == 0 || height == 0 {
+            return Err(err());
+        }
+
+        let mut this = Self::new((width, height));
+        if let Some(refresh) = refresh {
+            let hz: f64 = refresh.parse().map_err(|_| err())?;
+            // Check the rounded value that is actually used, so that e.g. 1.0004 Hz cannot round
+            // down to exactly 1 Hz. The negated comparison also rejects NaN.
+            let mhz = (hz * 1000.).round();
+            if !(mhz > f64::from(Self::MIN_REFRESH_MHZ) && mhz <= f64::from(Self::MAX_REFRESH_MHZ))
+            {
+                return Err(format!(
+                    "invalid headless refresh rate {refresh:?}, expected a value above 1 and at \
+                     most 1000 Hz"
+                ));
+            }
+            this.refresh_mhz = mhz as u32;
+        }
+
+        Ok(this)
+    }
+}
 
 pub struct Headless {
     renderer: Option<GlesRenderer>,
@@ -149,12 +230,9 @@ impl Headless {
         Ok(())
     }
 
-    /// Adds a headless output.
-    ///
-    /// `refresh_mhz` is in millihertz and must correspond to a refresh interval strictly below
-    /// one second (i.e. above 1000 mHz), which the frame clock requires.
-    pub fn add_output(&mut self, niri: &mut Niri, n: u8, size: (u16, u16), refresh_mhz: u32) {
-        assert!(refresh_mhz > 1000, "refresh rate must be above 1 Hz");
+    pub fn add_output(&mut self, niri: &mut Niri, n: u8, mode: HeadlessMode) {
+        let size = mode.size();
+        let refresh_mhz = mode.refresh_mhz();
 
         let connector = format!("headless-{n}");
         let make = "niri".to_string();
@@ -172,12 +250,12 @@ impl Headless {
             },
         );
 
-        let mode = Mode {
+        let output_mode = Mode {
             size: Size::from((i32::from(size.0), i32::from(size.1))),
             refresh: refresh_mhz as i32,
         };
-        output.change_current_state(Some(mode), None, None, None);
-        output.set_preferred(mode);
+        output.change_current_state(Some(output_mode), None, None, None);
+        output.set_preferred(output_mode);
 
         output.user_data().insert_if_missing(|| OutputName {
             connector,
@@ -212,8 +290,7 @@ impl Headless {
 
         // Give the frame clock the real refresh interval so it ticks on a proper vblank grid
         // rather than the drifting "now + fallback" path.
-        let refresh_interval = Duration::from_nanos(1_000_000_000_000 / u64::from(refresh_mhz));
-        niri.add_output(output, Some(refresh_interval), false);
+        niri.add_output(output, Some(mode.refresh_interval()), false);
     }
 
     pub fn seat_name(&self) -> String {
@@ -418,5 +495,71 @@ fn fetch_render_node(renderer: &GlesRenderer) -> anyhow::Result<DrmNode> {
 impl Default for Headless {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::HeadlessMode;
+
+    #[test]
+    fn headless_mode_parses_size_and_refresh() {
+        let mode: HeadlessMode = "1920x1080".parse().unwrap();
+        assert_eq!(mode.size(), (1920, 1080));
+        assert_eq!(mode.refresh_mhz(), 60_000);
+
+        let mode: HeadlessMode = "640x480@120".parse().unwrap();
+        assert_eq!(mode.size(), (640, 480));
+        assert_eq!(mode.refresh_mhz(), 120_000);
+
+        let mode: HeadlessMode = "640x480@59.94".parse().unwrap();
+        assert_eq!(mode.refresh_mhz(), 59_940);
+
+        assert_eq!(
+            "1x1@1000".parse::<HeadlessMode>().unwrap().refresh_mhz(),
+            1_000_000
+        );
+        assert_eq!(
+            "1x1@1.001".parse::<HeadlessMode>().unwrap().refresh_mhz(),
+            1_001
+        );
+    }
+
+    #[test]
+    fn headless_mode_rejects_invalid_values() {
+        for bad in [
+            "",
+            "1920",
+            "1920x",
+            "x1080",
+            "0x1080",
+            "1920x0",
+            "-1x1",
+            "70000x1",
+            "1920x1080@",
+            "1920x1080@abc",
+            "1920x1080@0",
+            "1920x1080@1",
+            "1920x1080@-60",
+            "1920x1080@1000.1",
+            "1920x1080@NaN",
+            "1920x1080@inf",
+            // Above 1 Hz, but rounds to exactly 1000 mHz, which the frame clock cannot use.
+            "1920x1080@1.0004",
+        ] {
+            assert!(bad.parse::<HeadlessMode>().is_err(), "{bad:?} parsed");
+        }
+    }
+
+    #[test]
+    fn headless_mode_refresh_interval_is_below_one_second() {
+        let slowest: HeadlessMode = "1x1@1.001".parse().unwrap();
+        assert!(slowest.refresh_interval() < Duration::from_secs(1));
+        assert_eq!(
+            HeadlessMode::new((1, 1)).refresh_interval(),
+            Duration::from_nanos(16_666_666)
+        );
     }
 }

@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use clap_complete::Shell;
 use niri_ipc::{Action, OutputAction};
 
+use crate::backend::headless::HeadlessMode;
 use crate::utils::version;
 
 #[derive(Parser)]
@@ -32,13 +33,16 @@ pub struct Cli {
     /// socket as usual, and the output can be captured with screencopy tools (e.g. grim).
     ///
     /// The refresh rate is optional and defaults to 60 Hz, e.g. `1920x1080@120`.
+    ///
+    /// Cannot be combined with `--session`: a headless instance is never the main compositor.
     #[arg(
         long,
         value_name = "WIDTHxHEIGHT[@HZ]",
         num_args = 0..=1,
-        default_missing_value = "1920x1080"
+        default_missing_value = "1920x1080",
+        conflicts_with = "session"
     )]
-    pub headless: Option<String>,
+    pub headless: Option<HeadlessMode>,
     /// Command to run upon compositor startup.
     #[arg(last = true)]
     pub command: Vec<OsString>,
@@ -151,5 +155,34 @@ impl TryFrom<CompletionShell> for Shell {
             CompletionShell::Zsh => Ok(Shell::Zsh),
             CompletionShell::Nushell => Err("Nushell should be handled separately"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser as _;
+
+    use super::Cli;
+
+    #[test]
+    fn headless_defaults_to_1080p60() {
+        let cli = Cli::try_parse_from(["niri", "--headless"]).unwrap();
+        let mode = cli.headless.unwrap();
+        assert_eq!(mode.size(), (1920, 1080));
+        assert_eq!(mode.refresh_mhz(), 60_000);
+    }
+
+    #[test]
+    fn headless_rejects_invalid_modes_at_parse_time() {
+        assert!(Cli::try_parse_from(["niri", "--headless", "1920x1080@1.0004"]).is_err());
+        assert!(Cli::try_parse_from(["niri", "--headless", "bogus"]).is_err());
+    }
+
+    /// `--session` imports the environment into systemd and D-Bus, which would point the real
+    /// session at an invisible compositor.
+    #[test]
+    fn headless_conflicts_with_session() {
+        assert!(Cli::try_parse_from(["niri", "--headless", "--session"]).is_err());
+        assert!(Cli::try_parse_from(["niri", "--session", "--headless", "640x480"]).is_err());
     }
 }

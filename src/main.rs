@@ -183,23 +183,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Increase the buffer size so that it's harder to crash a frozen client with a 1000 Hz mouse.
     set_default_max_buffer_size(&display, 1024 * 1024);
 
-    let headless_mode = match cli.headless.as_deref() {
-        Some(mode) => Some(parse_headless_mode(mode)?),
-        None => None,
-    };
-
     let mut state = State::new(
         config,
         event_loop.handle(),
         event_loop.get_signal(),
         display,
-        headless_mode.is_some(),
+        cli.headless.is_some(),
         true,
         cli.session,
     )
     .unwrap();
 
-    if let Some((size, refresh_mhz)) = headless_mode {
+    if let Some(mode) = cli.headless {
         let State { backend, niri } = &mut state;
         let headless = backend.headless();
         match headless.add_renderer() {
@@ -212,7 +207,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 warn!("headless: renderer unavailable, screencopy and dmabuf disabled: {err:?}");
             }
         }
-        headless.add_output(niri, 1, size, refresh_mhz);
+        headless.add_output(niri, 1, mode);
     }
 
     // Set WAYLAND_DISPLAY for children.
@@ -301,45 +296,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap();
 
     Ok(())
-}
-
-fn parse_headless_mode(mode: &str) -> Result<((u16, u16), u32), String> {
-    let err = || {
-        format!(
-            "invalid headless mode {mode:?}, expected WIDTHxHEIGHT with an optional refresh \
-             rate, e.g. 1920x1080 or 1920x1080@120"
-        )
-    };
-
-    let (size, refresh) = match mode.split_once('@') {
-        Some((size, refresh)) => (size, Some(refresh)),
-        None => (mode, None),
-    };
-
-    let (width, height) = size.split_once('x').ok_or_else(err)?;
-    let width = width.parse().map_err(|_| err())?;
-    let height = height.parse().map_err(|_| err())?;
-    if width == 0 || height == 0 {
-        return Err(err());
-    }
-
-    let refresh_mhz = match refresh {
-        None => niri::backend::headless::DEFAULT_REFRESH_MHZ,
-        Some(refresh) => {
-            let hz: f64 = refresh.parse().map_err(|_| err())?;
-            // The frame clock needs a refresh interval strictly below one second, and anything
-            // above 1 kHz is a typo.
-            if !hz.is_finite() || hz <= 1. || hz > 1000. {
-                return Err(format!(
-                    "invalid headless refresh rate {refresh:?}, expected a value above 1 and at \
-                     most 1000 Hz"
-                ));
-            }
-            (hz * 1000.).round() as u32
-        }
-    };
-
-    Ok(((width, height), refresh_mhz))
 }
 
 fn import_environment() {

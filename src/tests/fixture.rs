@@ -10,6 +10,7 @@ use smithay::output::Output;
 
 use super::client::{Client, ClientId};
 use super::server::Server;
+use crate::backend::headless::HeadlessMode;
 use crate::niri::{NewClient, Niri};
 
 pub struct Fixture {
@@ -92,12 +93,10 @@ impl Fixture {
     pub fn add_output(&mut self, n: u8, size: (u16, u16)) {
         let state = self.niri_state();
         let niri = &mut state.niri;
-        state.backend.headless().add_output(
-            niri,
-            n,
-            size,
-            crate::backend::headless::DEFAULT_REFRESH_MHZ,
-        );
+        state
+            .backend
+            .headless()
+            .add_output(niri, n, HeadlessMode::new(size));
     }
 
     pub fn add_client(&mut self) -> ClientId {
