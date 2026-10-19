@@ -930,6 +930,7 @@ mod tests {
             layer-rule {
                 match namespace="^notifications$"
                 block-out-from "screencast"
+                hide-from "screen-capture"
             }
 
             binds {
@@ -1953,6 +1954,9 @@ mod tests {
                     opacity: None,
                     block_out_from: Some(
                         Screencast,
+                    ),
+                    hide_from: Some(
+                        ScreenCapture,
                     ),
                     shadow: ShadowRule {
                         off: false,

@@ -129,6 +129,21 @@ layer-rule {
 }
 ```
 
+
+#### `hide-from`
+
+Like `block-out-from`, but the surface is left out entirely instead of being replaced with a black rectangle: whatever is beneath it shows through.
+
+This is for overlays that annotate the screen without being part of it, like a screen recorder's drawing layer or controls.
+
+```kdl
+// Keep Scrawl's ink overlay and capsule out of its own recordings.
+layer-rule {
+    match namespace="^scrawl"
+
+    hide-from "screencast"
+}
+```
 #### `opacity`
 
 Set the opacity of the surface.

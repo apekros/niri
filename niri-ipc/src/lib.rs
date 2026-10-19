@@ -119,6 +119,14 @@ pub enum Request {
     OverviewState,
     /// Request information about screencasts.
     Casts,
+    /// Request the pointer's position.
+    PointerPosition,
+    /// Request where the windows on each output's visible workspaces are drawn.
+    ///
+    /// Unlike [`Window::layout`], this has positions for tiled windows too. It's answered on
+    /// request only, with no event, since a tiled window's position changes with every scroll of
+    /// the view.
+    WindowGeometries,
 }
 
 /// Reply from niri to client.
@@ -165,6 +173,37 @@ pub enum Response {
     OverviewState(Overview),
     /// Information about screencasts.
     Casts(Vec<Cast>),
+    /// The pointer's position, if there is a pointer.
+    PointerPosition(Option<PointerPosition>),
+    /// Where visible windows are drawn, frontmost first.
+    WindowGeometries(Vec<WindowGeometry>),
+}
+
+/// Where the pointer is.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub struct PointerPosition {
+    /// X in the global logical coordinate space (the one output positions are in).
+    pub x: f64,
+    /// Y in the global logical coordinate space.
+    pub y: f64,
+    /// Name of the output under the pointer, if any.
+    pub output: Option<String>,
+}
+
+/// Where a window is drawn.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub struct WindowGeometry {
+    /// Id of the window, as in [`Window::id`].
+    pub id: u64,
+    /// Name of the output the window is on.
+    pub output: String,
+    /// The window's visual geometry (without niri's borders) in the global logical coordinate
+    /// space: `(x, y, width, height)`.
+    ///
+    /// This is where the window is laid out, without animations in progress.
+    pub rect: (f64, f64, f64, f64),
 }
 
 /// Overview information.

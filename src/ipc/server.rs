@@ -17,8 +17,8 @@ use futures_util::{select_biased, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, Fu
 use niri_config::OutputName;
 use niri_ipc::state::{EventStreamState, EventStreamStatePart as _};
 use niri_ipc::{
-    Action, Event, KeyboardLayouts, OutputConfigChanged, Overview, Reply, Request, Response,
-    Timestamp, WindowLayout, Workspace,
+    Action, Event, KeyboardLayouts, OutputConfigChanged, Overview, PointerPosition, Reply,
+    Request, Response, Timestamp, WindowLayout, Workspace,
 };
 use smithay::desktop::layer_map_for_output;
 use smithay::input::pointer::{
@@ -455,6 +455,34 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
             let state = ctx.event_stream_state.borrow();
             let casts = state.casts.casts.values().cloned().collect();
             Response::Casts(casts)
+        }
+        Request::PointerPosition => {
+            let (tx, rx) = async_channel::bounded(1);
+            ctx.event_loop.insert_idle(move |state| {
+                let pos = state.niri.seat.get_pointer().map(|p| p.current_location());
+                let position = pos.map(|pos| PointerPosition {
+                    x: pos.x,
+                    y: pos.y,
+                    output: state
+                        .niri
+                        .output_under(pos)
+                        .map(|(output, _)| output.name()),
+                });
+                let _ = tx.send_blocking(position);
+            });
+            let result = rx.recv().await;
+            let position = result.map_err(|_| String::from("error getting the pointer position"))?;
+            Response::PointerPosition(position)
+        }
+        Request::WindowGeometries => {
+            let (tx, rx) = async_channel::bounded(1);
+            ctx.event_loop.insert_idle(move |state| {
+                let _ = tx.send_blocking(state.niri.window_geometries());
+            });
+            let result = rx.recv().await;
+            let geometries =
+                result.map_err(|_| String::from("error getting window geometries"))?;
+            Response::WindowGeometries(geometries)
         }
     };
 

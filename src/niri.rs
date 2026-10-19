@@ -3202,6 +3202,34 @@ impl Niri {
         self.queue_redraw_all();
     }
 
+    /// Where the windows on each output's visible workspaces are laid out, in global logical
+    /// coordinates, frontmost first within each workspace (floating above tiled).
+    pub fn window_geometries(&self) -> Vec<niri_ipc::WindowGeometry> {
+        let mut out = Vec::new();
+        for mon in self.layout.monitors() {
+            let output = mon.output();
+            let Some(output_geo) = self.global_space.output_geometry(output) else {
+                continue;
+            };
+            let output_loc = output_geo.loc.to_f64();
+            for (ws, ws_geo) in mon.workspaces_with_render_geo() {
+                for (tile, tile_pos, visible) in ws.tiles_with_render_positions() {
+                    if !visible {
+                        continue;
+                    }
+                    let loc = output_loc + ws_geo.loc + tile_pos + tile.window_loc();
+                    let size = tile.window().size().to_f64();
+                    out.push(niri_ipc::WindowGeometry {
+                        id: tile.window().id().get(),
+                        output: output.name(),
+                        rect: (loc.x, loc.y, size.w, size.h),
+                    });
+                }
+            }
+        }
+        out
+    }
+
     pub fn output_under(&self, pos: Point<f64, Logical>) -> Option<(&Output, Point<f64, Logical>)> {
         let output = self.global_space.output_under(pos).next()?;
         let pos_within_output = pos
