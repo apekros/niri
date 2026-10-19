@@ -3212,13 +3212,16 @@ impl Niri {
                 continue;
             };
             let output_loc = output_geo.loc.to_f64();
+            // In the overview, workspaces are drawn zoomed out around their render geometry.
+            let zoom = mon.overview_zoom();
             for (ws, ws_geo) in mon.workspaces_with_render_geo() {
                 for (tile, tile_pos, visible) in ws.tiles_with_render_positions() {
                     if !visible {
                         continue;
                     }
-                    let loc = output_loc + ws_geo.loc + tile_pos + tile.window_loc();
-                    let size = tile.window().size().to_f64();
+                    let within = (tile_pos + tile.window_loc()).upscale(zoom);
+                    let loc = output_loc + ws_geo.loc + within;
+                    let size = tile.window().size().to_f64().upscale(zoom);
                     out.push(niri_ipc::WindowGeometry {
                         id: tile.window().id().get(),
                         output: output.name(),
