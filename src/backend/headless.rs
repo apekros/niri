@@ -261,7 +261,7 @@ impl Headless {
             connector,
             make: Some(make),
             model: Some(model),
-            serial: Some(serial),
+            serial: Some(serial.clone()),
         });
 
         let physical_properties = output.physical_properties();
@@ -271,7 +271,9 @@ impl Headless {
                 name: output.name(),
                 make: physical_properties.make,
                 model: physical_properties.model,
-                serial: None,
+                // The same serial as the output's name, or config made from what IPC and
+                // wlr-output-management say (`niri headless 1`) finds no output.
+                serial: Some(serial.clone()),
                 physical_size: None,
                 modes: vec![niri_ipc::Mode {
                     width: size.0,
@@ -295,6 +297,65 @@ impl Headless {
 
     pub fn seat_name(&self) -> String {
         "headless".to_owned()
+    }
+
+    /// Applies configured modes to the virtual outputs, so a headless output can be resized at
+    /// runtime: with `niri msg output <name> custom-mode WxH@HZ`, wlr-output-management, or the
+    /// config file.
+    ///
+    /// Only the size changes. The refresh rate stays the one the output started with, since the
+    /// frame clock ticks on it.
+    pub fn on_output_config_changed(&mut self, niri: &mut Niri) {
+        let outputs: Vec<Output> = niri.output_state.keys().cloned().collect();
+        for output in outputs {
+            let Some(current) = output.current_mode() else {
+                continue;
+            };
+            let wanted = {
+                let config = niri.config.borrow();
+                output
+                    .user_data()
+                    .get::<OutputName>()
+                    .and_then(|name| config.outputs.find(name))
+                    .and_then(|config| config.mode)
+                    .map(|mode| (mode.mode.width, mode.mode.height))
+            };
+            let Some((width, height)) = wanted else {
+                continue;
+            };
+            let size = Size::from((i32::from(width), i32::from(height)));
+            if width == 0 || height == 0 || size == current.size {
+                continue;
+            }
+
+            let mode = Mode {
+                size,
+                refresh: current.refresh,
+            };
+            output.change_current_state(Some(mode), None, None, None);
+            output.set_preferred(mode);
+            // The offscreen target is made at the output's size: a new one on the next render.
+            self.render_targets.remove(&output);
+
+            let name = output.name();
+            for ipc_output in self.ipc_outputs.lock().unwrap().values_mut() {
+                if ipc_output.name == name {
+                    ipc_output.modes = vec![niri_ipc::Mode {
+                        width,
+                        height,
+                        refresh_rate: u32::try_from(current.refresh).unwrap_or(0),
+                        is_preferred: true,
+                    }];
+                    ipc_output.current_mode = Some(0);
+                    ipc_output.logical = Some(logical_output(&output));
+                }
+            }
+            niri.ipc_outputs_changed = true;
+
+            debug!("headless output {name}: resized to {width}x{height}");
+            niri.output_resized(&output);
+            niri.queue_redraw(&output);
+        }
     }
 
     pub fn with_primary_renderer<T>(

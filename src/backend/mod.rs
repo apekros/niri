@@ -209,7 +209,7 @@ impl Backend {
         match self {
             Backend::Tty(tty) => tty.on_output_config_changed(niri),
             Backend::Winit(_) => (),
-            Backend::Headless(_) => (),
+            Backend::Headless(headless) => headless.on_output_config_changed(niri),
         }
     }
 
