@@ -50,6 +50,59 @@ pub struct ScreencopyQueue {
     screencopies: Vec<Screencopy>,
     /// Cast tracking, set when the first with_damage request arrives.
     cast: Option<ScreencopyCast>,
+    /// What changed since each of the client's shm buffers was last filled.
+    buffer_damage: BufferDamage,
+}
+
+/// What changed in an output since each of a client's shm buffers was last
+/// filled from it, so a buffer can be brought up to date by reading back
+/// only that: the client gets a whole frame, as the protocol says, without
+/// all of a large output read back from the GPU for every frame.
+#[derive(Default)]
+pub struct BufferDamage {
+    /// The buffers, most recently filled last, and what changed since.
+    buffers: Vec<(WlBuffer, Vec<Rectangle<i32, Physical>>)>,
+}
+
+impl BufferDamage {
+    /// Buffers remembered: a client takes turns with a few at most.
+    const KEPT: usize = 8;
+    /// The most parts read back one by one. Past that, or past half the
+    /// output, reading all of it costs less.
+    const MOST_REGIONS: usize = 16;
+
+    /// Notes that `buffer`, of `size`, is being filled with a frame in
+    /// which `damage` changed, and returns what of it to read back: what
+    /// changed since it was last filled, or `None` for all of it.
+    pub fn fill(
+        &mut self,
+        buffer: &WlBuffer,
+        size: Size<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+    ) -> Option<Vec<Rectangle<i32, Physical>>> {
+        self.buffers.retain(|(kept, _)| kept.is_alive());
+        for (_, since) in &mut self.buffers {
+            since.extend_from_slice(damage);
+        }
+        let known = self.buffers.iter().position(|(kept, _)| kept == buffer);
+        let since = known.map(|index| self.buffers.remove(index).1);
+        self.buffers.push((buffer.clone(), Vec::new()));
+        if self.buffers.len() > Self::KEPT {
+            self.buffers.remove(0);
+        }
+        let since = since?;
+        let whole = i64::from(size.w) * i64::from(size.h);
+        let area: i64 = since
+            .iter()
+            .map(|rect| i64::from(rect.size.w) * i64::from(rect.size.h))
+            .sum();
+        (since.len() <= Self::MOST_REGIONS && area * 2 < whole).then_some(since)
+    }
+
+    /// Forgets every buffer: what they hold is no longer known.
+    pub fn forget(&mut self) {
+        self.buffers.clear();
+    }
 }
 
 pub struct ScreencopyCast {
@@ -99,6 +152,7 @@ impl ScreencopyQueue {
             screencopies: Vec::new(),
             cast: None,
             credentials,
+            buffer_damage: BufferDamage::default(),
         }
     }
 
@@ -115,13 +169,20 @@ impl ScreencopyQueue {
         self.credentials
     }
 
-    pub fn split(&mut self) -> (&mut OutputDamageTracker, Option<&Screencopy>) {
+    pub fn split(
+        &mut self,
+    ) -> (
+        &mut OutputDamageTracker,
+        Option<&Screencopy>,
+        &mut BufferDamage,
+    ) {
         let ScreencopyQueue {
             damage_tracker,
             screencopies,
+            buffer_damage,
             ..
         } = self;
-        (damage_tracker, screencopies.first())
+        (damage_tracker, screencopies.first(), buffer_damage)
     }
 
     pub fn push(&mut self, screencopy: Screencopy) {

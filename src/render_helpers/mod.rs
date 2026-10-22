@@ -326,6 +326,13 @@ pub fn render_to_dmabuf(
     Ok(res.sync)
 }
 
+/// Renders `elements` into the shm `buffer`.
+///
+/// With `regions`, only those parts are read back into the buffer: a client
+/// that asked for damage reads only what changed, and reading all of a
+/// large output back from the GPU every frame costs more than a frame at a
+/// high refresh rate. The rest of the buffer keeps what the client left
+/// there.
 pub fn render_to_shm(
     renderer: &mut GlesRenderer,
     damage_tracker: &mut OutputDamageTracker,
@@ -333,6 +340,7 @@ pub fn render_to_shm(
     format: wl_shm::Format,
     elements: &[impl RenderElement<GlesRenderer>],
     states: RenderElementStates,
+    regions: Option<&[Rectangle<i32, Physical>]>,
 ) -> anyhow::Result<()> {
     let _span = tracy_client::span!();
     // The pointer and length are the client's entire pool, which may hold other
@@ -387,6 +395,44 @@ pub fn render_to_shm(
                 states,
             )
             .context("error rendering")?;
+
+        if let Some(regions) = regions {
+            let bounds = Rectangle::<i32, Physical>::from_size(size);
+            for region in regions {
+                let Some(region) = region.intersection(bounds) else {
+                    continue;
+                };
+                let (x, y) = (region.loc.x as usize, region.loc.y as usize);
+                let (w, h) = (region.size.w as usize, region.size.h as usize);
+                let mapping = renderer
+                    .copy_framebuffer(
+                        &target,
+                        Rectangle::new(
+                            (region.loc.x, region.loc.y).into(),
+                            (region.size.w, region.size.h).into(),
+                        ),
+                        fourcc,
+                    )
+                    .context("error copying framebuffer region")?;
+                let bytes = renderer
+                    .map_texture(&mapping)
+                    .context("error mapping texture")?;
+                ensure!(bytes.len() >= w * 4 * h, "short texture mapping");
+                // SAFETY: the region is within the buffer, whose rows were
+                // checked to fit in the pool above.
+                unsafe {
+                    let _span = tracy_client::span!("copy_nonoverlapping region");
+                    for row in 0..h {
+                        ptr::copy_nonoverlapping(
+                            bytes.as_ptr().add(row * w * 4),
+                            pool.add(offset + (y + row) * stride + x * 4),
+                            w * 4,
+                        );
+                    }
+                }
+            }
+            return Ok(());
+        }
 
         let mapping =
             copy_framebuffer(renderer, &target, fourcc).context("error copying framebuffer")?;

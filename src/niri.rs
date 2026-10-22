@@ -5427,7 +5427,7 @@ impl Niri {
         let mut screencopy_state = mem::take(&mut self.screencopy_state);
 
         screencopy_state.with_queues_mut(|queue| {
-            let (damage_tracker, screencopy) = queue.split();
+            let (damage_tracker, screencopy, buffer_damage) = queue.split();
             if let Some(screencopy) = screencopy {
                 if screencopy.output() == output {
                     let ctx = RenderCtx {
@@ -5450,6 +5450,7 @@ impl Niri {
                         screencopy,
                     );
                     if let Some(damages) = damages {
+                        let damage_list = damages.clone();
                         // Convert from Physical coordinates back to Buffer coordinates.
                         let transform = output.current_transform();
                         let physical_size = transform.transform_size(screencopy.buffer_size());
@@ -5463,12 +5464,25 @@ impl Niri {
 
                         screencopy.damage(damages);
 
+                        // Only what changed since the buffer was last filled
+                        // needs reading back into it, when the damage is in
+                        // buffer coordinates already.
+                        let regions = match screencopy.buffer() {
+                            ScreencopyBuffer::Shm(buffer) if transform == Transform::Normal => {
+                                buffer_damage.fill(buffer, physical_size, &damage_list)
+                            }
+                            _ => {
+                                buffer_damage.forget();
+                                None
+                            }
+                        };
                         let render_result = Self::render_for_screencopy_internal(
                             renderer,
                             damage_tracker,
                             &elements,
                             states,
                             screencopy,
+                            regions.as_deref(),
                         );
                         match render_result {
                             Ok(sync) => {
@@ -5478,6 +5492,7 @@ impl Niri {
                                 // Recreate damage tracker to report full damage next check.
                                 *damage_tracker =
                                     OutputDamageTracker::new((0, 0), 1.0, Transform::Normal);
+                                buffer_damage.forget();
                                 queue.pop();
                                 warn!("error rendering for screencopy: {err:?}");
                             }
@@ -5533,6 +5548,7 @@ impl Niri {
             &elements,
             states,
             &screencopy,
+            None,
         );
         let res = res.map(|sync| screencopy.submit_after_sync(false, sync, &self.event_loop));
 
@@ -5650,6 +5666,7 @@ impl Niri {
                     wl_shm::Format::Xrgb8888,
                     elements,
                     states,
+                    None,
                 )
                 .map(|()| None),
             };
@@ -5761,6 +5778,7 @@ impl Niri {
                 wl_shm::Format::Argb8888,
                 elements,
                 states,
+                None,
             );
             match res {
                 Ok(()) => {
@@ -5968,6 +5986,7 @@ impl Niri {
         elements: &[impl RenderElement<GlesRenderer>],
         states: RenderElementStates,
         screencopy: &Screencopy,
+        regions: Option<&[Rectangle<i32, Physical>]>,
     ) -> anyhow::Result<Option<SyncPoint>> {
         let sync = match screencopy.buffer() {
             ScreencopyBuffer::Dmabuf(dmabuf) => {
@@ -5984,6 +6003,7 @@ impl Niri {
                     wl_shm::Format::Xrgb8888,
                     elements,
                     states,
+                    regions,
                 )
                 .context("error rendering to screencopy shm buffer")?;
                 None
