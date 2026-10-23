@@ -7,8 +7,8 @@ use anyhow::{anyhow, bail, Context};
 use niri_config::OutputName;
 use niri_ipc::socket::Socket;
 use niri_ipc::{
-    Action, Cast, CastKind, CastTarget, Event, KeyboardLayouts, LogicalOutput, Mode, Output,
-    OutputConfigChanged, Overview, Request, Response, Transform, Window, WindowLayout,
+    Action, Cast, CastKind, CastTarget, Cursor, Event, KeyboardLayouts, LogicalOutput, Mode,
+    Output, OutputConfigChanged, Overview, Request, Response, Transform, Window, WindowLayout,
 };
 use serde_json::json;
 
@@ -49,6 +49,7 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
         Msg::RequestError => Request::ReturnError,
         Msg::OverviewState => Request::OverviewState,
         Msg::Casts => Request::Casts,
+        Msg::Cursor => Request::Cursor,
         Msg::RawRequest => {
             let mut buf = Vec::new();
             let mut stdin = std::io::stdin().lock();
@@ -522,6 +523,9 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
                     Event::CastStopped { stream_id } => {
                         println!("Cast stopped: stream id {stream_id}");
                     }
+                    Event::CursorChanged { cursor } => {
+                        println!("Cursor changed: {}", describe_cursor(&cursor));
+                    }
                 }
             }
         }
@@ -543,6 +547,19 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
             } else {
                 println!("Overview is closed.");
             }
+        }
+        Msg::Cursor => {
+            let Response::Cursor(cursor) = response else {
+                bail!("unexpected response: expected Cursor, got {response:?}");
+            };
+
+            if json {
+                let cursor = serde_json::to_string(&cursor).context("error formatting response")?;
+                println!("{cursor}");
+                return Ok(());
+            }
+
+            println!("Cursor: {}", describe_cursor(&cursor));
         }
         Msg::Casts => {
             let Response::Casts(mut casts) = response else {
@@ -806,6 +823,14 @@ fn print_cast(cast: &Cast) {
 
     if let Some(node_id) = cast.pw_node_id {
         println!("  PipeWire node ID: {node_id}");
+    }
+}
+
+fn describe_cursor(cursor: &Cursor) -> String {
+    match cursor {
+        Cursor::Hidden {} => String::from("hidden"),
+        Cursor::Named { name } => format!("named \"{name}\""),
+        Cursor::Surface {} => String::from("drawn by the client"),
     }
 }
 

@@ -119,6 +119,8 @@ pub enum Request {
     OverviewState,
     /// Request information about screencasts.
     Casts,
+    /// Request the pointer cursor's current image.
+    Cursor,
 }
 
 /// Reply from niri to client.
@@ -165,6 +167,8 @@ pub enum Response {
     OverviewState(Overview),
     /// Information about screencasts.
     Casts(Vec<Cast>),
+    /// The pointer cursor's current image.
+    Cursor(Cursor),
 }
 
 /// Overview information.
@@ -173,6 +177,26 @@ pub enum Response {
 pub struct Overview {
     /// Whether the overview is currently open.
     pub is_open: bool,
+}
+
+/// The image the pointer cursor shows.
+///
+/// This is what niri draws for the pointer, which is usually up to the client under it.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum Cursor {
+    /// The cursor is hidden.
+    Hidden {},
+    /// An icon from the cursor theme.
+    Named {
+        /// The icon's name, as CSS names cursors, for example `default`, `pointer` or `text`.
+        ///
+        /// These are also the names of the `wp_cursor_shape_v1` protocol's shapes. New names may
+        /// show up as the protocol grows.
+        name: String,
+    },
+    /// An image the client drew itself on a surface.
+    Surface {},
 }
 
 /// Color picked from the screen.
@@ -1745,6 +1769,11 @@ pub enum Event {
     CastStopped {
         /// Stream ID of the stopped screencast.
         stream_id: u64,
+    },
+    /// The pointer cursor's image changed.
+    CursorChanged {
+        /// The new cursor image.
+        cursor: Cursor,
     },
 }
 

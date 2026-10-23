@@ -857,6 +857,7 @@ impl State {
         self.refresh_ipc_outputs();
         self.ipc_refresh_layout();
         self.ipc_refresh_keyboard_layout_index();
+        self.ipc_refresh_cursor();
 
         // Needs to be called after updating the keyboard focus.
         #[cfg(feature = "dbus")]

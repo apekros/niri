@@ -129,6 +129,8 @@ pub enum Msg {
     OverviewState,
     /// List screencasts.
     Casts,
+    /// Print the pointer cursor's current image.
+    Cursor,
     /// Send a raw JSON request to the compositor, reading from stdin.
     RawRequest,
 }

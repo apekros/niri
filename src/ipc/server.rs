@@ -456,6 +456,12 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
             let casts = state.casts.casts.values().cloned().collect();
             Response::Casts(casts)
         }
+        Request::Cursor => {
+            let state = ctx.event_stream_state.borrow();
+            let cursor = state.cursor.cursor.clone();
+            let cursor = cursor.ok_or_else(|| String::from("the cursor is not known yet"))?;
+            Response::Cursor(cursor)
+        }
     };
 
     Ok(response)
@@ -803,6 +809,40 @@ impl State {
         }
 
         let event = Event::OverviewOpenedOrClosed { is_open };
+        state.apply(event.clone());
+        server.send_event(event);
+    }
+
+    pub fn ipc_refresh_cursor(&mut self) {
+        let Some(server) = &self.niri.ipc_server else {
+            return;
+        };
+
+        let mut state = server.event_stream_state.borrow_mut();
+        let state = &mut state.cursor;
+        let current = self.niri.cursor_manager.cursor_image();
+
+        // Compared before converting, since this runs on every refresh.
+        let unchanged = match (current, &state.cursor) {
+            (CursorImageStatus::Hidden, Some(niri_ipc::Cursor::Hidden {})) => true,
+            (CursorImageStatus::Surface(_), Some(niri_ipc::Cursor::Surface {})) => true,
+            (CursorImageStatus::Named(icon), Some(niri_ipc::Cursor::Named { name })) => {
+                icon.name() == name
+            }
+            _ => false,
+        };
+        if unchanged {
+            return;
+        }
+
+        let cursor = match current {
+            CursorImageStatus::Hidden => niri_ipc::Cursor::Hidden {},
+            CursorImageStatus::Surface(_) => niri_ipc::Cursor::Surface {},
+            CursorImageStatus::Named(icon) => niri_ipc::Cursor::Named {
+                name: icon.name().to_owned(),
+            },
+        };
+        let event = Event::CursorChanged { cursor };
         state.apply(event.clone());
         server.send_event(event);
     }

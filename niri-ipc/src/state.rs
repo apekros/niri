@@ -9,7 +9,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
-use crate::{Cast, Event, KeyboardLayouts, Window, Workspace};
+use crate::{Cast, Cursor, Event, KeyboardLayouts, Window, Workspace};
 
 /// Part of the state communicated via the event stream.
 pub trait EventStreamStatePart {
@@ -49,6 +49,9 @@ pub struct EventStreamState {
 
     /// State of screencasts.
     pub casts: CastsState,
+
+    /// State of the pointer cursor.
+    pub cursor: CursorState,
 }
 
 /// The workspaces state communicated over the event stream.
@@ -93,6 +96,13 @@ pub struct CastsState {
     pub casts: HashMap<u64, Cast>,
 }
 
+/// The pointer cursor state communicated over the event stream.
+#[derive(Debug, Default)]
+pub struct CursorState {
+    /// The cursor's current image, once niri said it.
+    pub cursor: Option<Cursor>,
+}
+
 impl EventStreamStatePart for EventStreamState {
     fn replicate(&self) -> Vec<Event> {
         let mut events = Vec::new();
@@ -102,6 +112,7 @@ impl EventStreamStatePart for EventStreamState {
         events.extend(self.overview.replicate());
         events.extend(self.config.replicate());
         events.extend(self.casts.replicate());
+        events.extend(self.cursor.replicate());
         events
     }
 
@@ -112,6 +123,7 @@ impl EventStreamStatePart for EventStreamState {
         let event = self.overview.apply(event)?;
         let event = self.config.apply(event)?;
         let event = self.casts.apply(event)?;
+        let event = self.cursor.apply(event)?;
         Some(event)
     }
 }
@@ -315,6 +327,26 @@ impl EventStreamStatePart for CastsState {
             Event::CastStopped { stream_id } => {
                 let cast = self.casts.remove(&stream_id);
                 cast.expect("stopped cast was missing from the map");
+            }
+            event => return Some(event),
+        }
+        None
+    }
+}
+
+impl EventStreamStatePart for CursorState {
+    fn replicate(&self) -> Vec<Event> {
+        if let Some(cursor) = self.cursor.clone() {
+            vec![Event::CursorChanged { cursor }]
+        } else {
+            vec![]
+        }
+    }
+
+    fn apply(&mut self, event: Event) -> Option<Event> {
+        match event {
+            Event::CursorChanged { cursor } => {
+                self.cursor = Some(cursor);
             }
             event => return Some(event),
         }
