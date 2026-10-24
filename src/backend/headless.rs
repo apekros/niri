@@ -157,9 +157,20 @@ impl Headless {
             return Ok(());
         }
 
+        // A GPU's own EGL device when there is one, so the render node is known: clients are
+        // told to allocate their buffers on it, and NVIDIA's Vulkan won't present to a
+        // compositor that names none. NVIDIA's surfaceless display is backed by a device with no
+        // DRM node to name. Surfaceless otherwise, which may be a software renderer.
+        let (display, device_node) = match gpu_display() {
+            Ok((display, node)) => (display, Some(node)),
+            Err(err) => {
+                debug!("no GPU EGL device to render on, going surfaceless: {err:?}");
+                let display = unsafe { EGLDisplay::new(EGLSurfacelessDisplay) }
+                    .context("error creating EGL display")?;
+                (display, None)
+            }
+        };
         let mut renderer = unsafe {
-            let display =
-                EGLDisplay::new(EGLSurfacelessDisplay).context("error creating EGL display")?;
             let context = EGLContext::new(&display).context("error creating EGL context")?;
             GlesRenderer::new(context).context("error creating renderer")?
         };
@@ -167,8 +178,8 @@ impl Headless {
         resources::init(&mut renderer);
         shaders::init(&mut renderer);
 
-        // The surfaceless EGL display is created once, so its render node cannot change.
-        self.render_node = match fetch_render_node(&renderer) {
+        // The EGL display is created once, so its render node cannot change.
+        self.render_node = match device_node.map_or_else(|| fetch_render_node(&renderer), Ok) {
             Ok(node) => {
                 if let Some(path) = node.dev_path() {
                     debug!("using as the render node: {path:?}");
@@ -542,6 +553,28 @@ impl Headless {
     pub fn ipc_outputs(&self) -> Arc<Mutex<IpcOutputMap>> {
         self.ipc_outputs.clone()
     }
+}
+
+/// An EGL display on the first GPU EGL lists that has a render node, and that node.
+fn gpu_display() -> anyhow::Result<(EGLDisplay, DrmNode)> {
+    for device in EGLDevice::enumerate().context("error listing EGL devices")? {
+        if device.is_software() {
+            continue;
+        }
+        let node = match device.try_get_render_node() {
+            Ok(Some(node)) => node,
+            Ok(None) => continue,
+            Err(err) => {
+                debug!("EGL device without a DRM node: {err:?}");
+                continue;
+            }
+        };
+        match unsafe { EGLDisplay::new(device) } {
+            Ok(display) => return Ok((display, node)),
+            Err(err) => debug!("error creating EGL display on {node}: {err:?}"),
+        }
+    }
+    anyhow::bail!("no GPU EGL device with a render node")
 }
 
 fn fetch_render_node(renderer: &GlesRenderer) -> anyhow::Result<DrmNode> {
